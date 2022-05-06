@@ -5,6 +5,7 @@ import os
 import threading
 from collections import defaultdict
 from time import time
+from types import MethodType
 from typing import Any, Callable, Optional
 
 levels_down_the_rabbit_hole = defaultdict(lambda: defaultdict(int))
@@ -130,6 +131,11 @@ class LazyLoggerWrappedFunction:
         self.post_execution(start,return_value,*args,**kwargs)
         return return_value
     
+    def __get__(self, obj, objtype=None):
+        if obj is None:
+            return self
+        return MethodType(self, obj)
+
     def pre_execution(self, *args: Any, **kwargs: Any) -> None:
         if self.log_level is not None:
             self.logger.setLevel(self.log_level)
