@@ -1,7 +1,7 @@
 build
 dist
 .eggs
-eth_retry.egg-info
+bobs_lazy_logging.egg-info
 __pycache__
 env
 .mypy_cache

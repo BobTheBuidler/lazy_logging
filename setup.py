@@ -3,7 +3,7 @@
 from setuptools import find_packages, setup
 
 setup(
-    name='lazy_logging',
+    name='bobs_lazy_logging',
     packages=find_packages(),
     use_scm_version={
         "root": ".",
