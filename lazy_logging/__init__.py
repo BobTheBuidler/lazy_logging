@@ -8,12 +8,14 @@ from collections import defaultdict
 from inspect import isawaitable
 from time import time
 from types import MethodType
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Iterable, Optional
 
-debug_logger = logging.getLogger("lazy_logging")
+logger = logging.getLogger("lazy_logging")
+
 if os.environ.get("LL_DEBUG", False):
-    debug_logger.addHandler(logging.StreamHandler())
-    debug_logger.setLevel(logging.DEBUG)
+    logger.addHandler(logging.StreamHandler())
+    logger.setLevel(logging.DEBUG)
+
 
 levels_down_the_rabbit_hole = defaultdict(lambda: defaultdict(int))
 
@@ -91,7 +93,7 @@ class LazyLogger:
         if not self.logger.handlers:
             self.logger.addHandler(logging.StreamHandler())
 
-    def __call__(self, func: Callable[...,Any]) -> "LazyLoggerWrappedFunction[...,Any]":
+    def __call__(self, func: Callable[...,Any]) -> "LazyLoggerWrapped[...,Any]":
         """
         Wraps a Callable or Awaitable `func` into a LazyLoggerWrapped object using the attributes of `self`.
         """
@@ -99,8 +101,6 @@ class LazyLogger:
             wrapped = LazyLoggerWrappedCoroutineFunction(func)
         # async cached property libs will trigger this branch
         elif not callable(func):
-            debug_logger.debug(f"func: {func}")
-            debug_logger.debug(f"__wrapped__: {func.__wrapped__}")
             wrapped = LazyLoggerWrappedGettableCoroutineFunction(func)
         else:
             wrapped = LazyLoggerWrappedCallable(func)
@@ -129,8 +129,6 @@ class LazyLoggerWrapped:
     log_level: Optional[int]
 
     def __init__(self, func: Callable[...,Any]) -> None:
-        #if not (callable(func) or isawaitable(func) or iscoroutinefunction(func)):
-        #    raise TypeError(f"`func` must be Callable or Awaitable. You passed a(n) {type(func)} type: {func}.")
         self.func = func
         self.func_string = f"{self.func.__module__}.{self.func.__name__}" if self.func.__module__ else self.func.__name__
         functools.update_wrapper(self, self.func)
@@ -148,12 +146,12 @@ class LazyLoggerWrapped:
     def pre_execution(self, *args: Any, **kwargs: Any) -> None:
         if self.log_level is not None:
             self.logger.setLevel(self.log_level)
-        self.logger.debug(f'{self.spacing}Fetching {self.describer_string(*args,**kwargs)}...')
+        self.logger.debug(f'Fetching {self.describer_string(*args,**kwargs)}...')
         iterup()
     
     def post_execution(self, start: float, return_value: Any, *args: Any, **kwargs: Any) -> None:
         iterdown()
-        self.logger.debug(f'{self.spacing}{self.describer_string(*args,**kwargs)} returns: {return_value}')
+        self.logger.debug(f'{self.describer_string(*args,**kwargs)} returns: {return_value}')
         self.record_duration(start, self.describer_string(*args,**kwargs))
     
     @property
@@ -171,6 +169,7 @@ class LazyLoggerWrapped:
         return f'{self.func_string}({all_args})'
     
     def record_duration(self, start: float, describer_string: str) -> None:
+        # TODO implement this with an env var flag
         return
         record_duration(self.func.__name__, describer_string, time() - start)
 
@@ -216,8 +215,8 @@ class LazyLoggerWrappedGettableCoroutineFunction(LazyLoggerWrapped):
         functools.update_wrapper(self, func)
     
     def awaitable(self, instance, owner):
-        debug_logger.debug(f'instance: {instance}')
-        debug_logger.debug(f'owner: {owner}')
+        logger.debug(f'instance: {instance}')
+        logger.debug(f'owner: {owner}')
         awaitable = LazyLoggerWrappedAwaitable(self.func.__get__,instance,owner=owner)
         assert isawaitable(awaitable)
         awaitable.logger = self.logger
@@ -242,23 +241,21 @@ class LazyLoggerWrappedAwaitable(LazyLoggerWrapped):
         self.awaitable = awaitable
     
     def __hash__(self):
-        return hash((self.func,self.func_string,*self.args,str(*self.kwargs)))
-    
-    def __repr__(self) -> str:
-        return f"<LazyLoggerWrappedAwaitable '{self.func.__module__}.{self.func.__name__}'>"
+        args = (arg if not isinstance(arg, Iterable) else tuple(arg) for arg in self.args)
+        return hash((self.func,self.func_string,args,tuple(self.kwargs)))
 
     def __await__(self) -> Any:
         start = time()
         assert hasattr(self,'logger'), "You need to set `self.logger` first."
         assert hasattr(self,'log_level'), "You need to set `self.log_level` first."
-        debug_logger.debug(self.func)
-        debug_logger.debug(self.args)
-        debug_logger.debug(self.kwargs)
+        logger.debug(self.func)
+        logger.debug(self.args)
+        logger.debug(self.kwargs)
         self.pre_execution(*self.args,**self.kwargs)
         return_value = yield from self.awaitable.__await__()
-        debug_logger.debug(f'awaited once: {type(return_value)}')
+        logger.debug(f'awaited once: {type(return_value)}')
         if isawaitable(return_value):
             return_value = yield from return_value.__await__()
-            debug_logger.debug(f'awaited twice: {type(return_value)}')
+            logger.debug(f'awaited twice: {type(return_value)}')
         self.post_execution(start,return_value,*self.args,**self.kwargs)
         return return_value
