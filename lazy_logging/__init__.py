@@ -10,11 +10,7 @@ from inspect import isawaitable
 from time import time
 from types import MethodType
 from typing import Any, Awaitable, Callable, DefaultDict, Generator, Generic, Iterable, Optional, TYPE_CHECKING, TypeVar, cast, overload
-
-try:
-    from typing import ParamSpec
-except ImportError:  # pragma: no cover - fallback for older Python
-    from typing_extensions import ParamSpec
+from typing_extensions import ParamSpec
 
 if TYPE_CHECKING:
     from typing_extensions import override

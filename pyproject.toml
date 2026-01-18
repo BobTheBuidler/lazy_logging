@@ -16,3 +16,7 @@ enable_error_code = [
   "unused-awaitable",
   "unused-ignore",
 ]
+
+[[tool.mypy.overrides]]
+module = ["pytest", "pytest.*"]
+follow_imports = "skip"
