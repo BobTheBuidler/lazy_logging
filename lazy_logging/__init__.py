@@ -1,3 +1,4 @@
+from __future__ import annotations
 
 import functools
 import logging
@@ -8,7 +9,17 @@ from collections import defaultdict
 from inspect import isawaitable
 from time import time
 from types import MethodType
-from typing import Any, Callable, Iterable, Optional
+from typing import Any, Awaitable, Callable, DefaultDict, Generator, Generic, Iterable, Optional, TYPE_CHECKING, TypeVar, cast, overload
+from typing_extensions import ParamSpec
+
+if TYPE_CHECKING:
+    from typing_extensions import override
+else:
+    try:
+        from typing import override
+    except ImportError:
+        def override(func: Callable[..., Any]) -> Callable[..., Any]:
+            return func
 
 logger = logging.getLogger("lazy_logging")
 
@@ -16,14 +27,22 @@ if os.environ.get("LL_DEBUG", False):
     logger.addHandler(logging.StreamHandler())
     logger.setLevel(logging.DEBUG)
 
+P = ParamSpec("P")
+R = TypeVar("R")
 
-levels_down_the_rabbit_hole = defaultdict(lambda: defaultdict(int))
+levels_down_the_rabbit_hole: DefaultDict[int, DefaultDict[int, int]] = defaultdict(lambda: defaultdict(int))
 
-def iterup():
+
+def iterup() -> None:
     levels_down_the_rabbit_hole[os.getpid()][threading.get_ident()] += 1
 
-def iterdown():
+
+def iterdown() -> None:
     levels_down_the_rabbit_hole[os.getpid()][threading.get_ident()] -= 1
+
+
+def record_duration(name: str, describer_string: str, duration: float) -> None:
+    return
 
 
 class LazyLoggerFactory:
@@ -60,9 +79,11 @@ class LazyLoggerFactory:
             TypeError(f"`logger` must be an instance of `logging.Logger`. You passed a(n) {type(logger)} type: {logger}.")
         return LazyLogger(logger,self.key)
     
+    @override
     def __repr__(self) -> str:
         return f"<LazyLoggerFactory key='{self.key}'>"
     
+    @override
     def __eq__(self, __o: object) -> bool:
         if not isinstance(__o, LazyLoggerFactory):
             raise TypeError("Can only compare with other LazyLoggerFactory objects.")
@@ -83,22 +104,34 @@ class LazyLogger:
         return "some value"
     ```
     """
-    def __init__(self, logger: logging.Logger = None, key: str = "") -> None:
-        if not isinstance(logger, logging.Logger):
+    def __init__(self, logger: Optional[logging.Logger] = None, key: str = "") -> None:
+        if logger is not None and not isinstance(logger, logging.Logger):
             TypeError(f"`logger` must be an instance of `logging.Logger`. You passed a(n) {type(logger)} type: {logger}.")
         if not isinstance(key, str):
             TypeError(f"`key` must be an instance of `str`. You passed a(n) {type(key)} type: {key}.")
-        self.logger = logger or logging.getLogger(__name__)
+        self.logger = logger if logger is not None else logging.getLogger(__name__)
         self.key = 'LL_LEVEL' if not key else key if key.startswith("LL_LEVEL") else f'LL_LEVEL_{key}'
         if not self.logger.handlers:
             self.logger.addHandler(logging.StreamHandler())
 
-    def __call__(self, func: Callable[...,Any]) -> "LazyLoggerWrapped[...,Any]":
+    @overload
+    def __call__(self, func: Callable[P, R]) -> "LazyLoggerWrappedCallable[P, R]":
+        ...
+
+    @overload
+    def __call__(self, func: Callable[P, Awaitable[R]]) -> "LazyLoggerWrappedCoroutineFunction[P, R]":
+        ...
+
+    @overload
+    def __call__(self, func: Any) -> "LazyLoggerWrappedGettableCoroutineFunction":
+        ...
+
+    def __call__(self, func: Any) -> "LazyLoggerWrapped":
         """
         Wraps a Callable or Awaitable `func` into a LazyLoggerWrapped object using the attributes of `self`.
         """
         if iscoroutinefunction(func):
-            wrapped = LazyLoggerWrappedCoroutineFunction(func)
+            wrapped: LazyLoggerWrapped = LazyLoggerWrappedCoroutineFunction(func)
         # async cached property libs will trigger this branch
         elif not callable(func):
             wrapped = LazyLoggerWrappedGettableCoroutineFunction(func)
@@ -109,35 +142,44 @@ class LazyLogger:
         wrapped.log_level = self.log_level
         return wrapped
 
+    @override
     def __repr__(self) -> str:
         if self.key == "LL_LEVEL":
             return f"<LazyLogger '{self.logger.name}'>"
         return f"<LazyLogger '{self.logger.name}' key='{self.key}'>"
     
+    @override
     def __eq__(self, __o: object) -> bool:
         if not isinstance(__o, LazyLogger):
             raise TypeError("Can only compare with other LazyLogger objects.")
         return self.logger == __o.logger and self.key == __o.key
     
     @property
-    def log_level(self) -> int:
-        return getattr(logging,os.environ[self.key]) if self.key in os.environ else None
+    def log_level(self) -> Optional[int]:
+        if self.key in os.environ:
+            return cast(int, getattr(logging, os.environ[self.key]))
+        return None
 
 
 class LazyLoggerWrapped:
     logger: logging.Logger
     log_level: Optional[int]
+    func: Callable[..., Any]
+    func_string: str
 
     def __init__(self, func: Callable[...,Any]) -> None:
         self.func = func
-        self.func_string = f"{self.func.__module__}.{self.func.__name__}" if self.func.__module__ else self.func.__name__
-        functools.update_wrapper(self, self.func)
+        module = getattr(self.func, "__module__", "")
+        name = getattr(self.func, "__name__", self.func.__class__.__name__)
+        self.func_string = f"{module}.{name}" if module else name
+        functools.update_wrapper(cast(Callable[..., Any], self), self.func)
 
-    def __get__(self, obj, objtype=None):
+    def __get__(self, obj: Any, objtype: Any = None) -> Any:
         if obj is None:
             return self
-        return MethodType(self, obj)
+        return MethodType(cast(Callable[..., Any], self), obj)
     
+    @override
     def __eq__(self, __o: object) -> bool:
         if not isinstance(__o, LazyLoggerWrapped):
             raise TypeError("Can only compare with other LazyLoggerWrapped objects.")
@@ -159,13 +201,15 @@ class LazyLoggerWrapped:
         return '  ' * levels_down_the_rabbit_hole[os.getpid()][threading.get_ident()]
 
     def describer_string(self, *args: Any, **kwargs: Any) -> str:
+        args_text = ""
+        kwargs_text = ""
         if args:
-            args = str(tuple([*args]))[1:-1]
-            if args.endswith(','):
-                args = args[:-1]
+            args_text = str(tuple(args))[1:-1]
+            if args_text.endswith(','):
+                args_text = args_text[:-1]
         if kwargs:
-            kwargs = "".join(f"{kwarg}={value}," for kwarg, value in kwargs.items())[:-1]
-        all_args = "" if not args and not kwargs else args if not kwargs else kwargs if not args else f"{args},{kwargs}"
+            kwargs_text = "".join(f"{kwarg}={value}," for kwarg, value in kwargs.items())[:-1]
+        all_args = "" if not args_text and not kwargs_text else args_text if not kwargs_text else kwargs_text if not args_text else f"{args_text},{kwargs_text}"
         return f'{self.func_string}({all_args})'
     
     def record_duration(self, start: float, describer_string: str) -> None:
@@ -174,8 +218,10 @@ class LazyLoggerWrapped:
         record_duration(self.func.__name__, describer_string, time() - start)
 
 
-class LazyLoggerWrappedCallable(LazyLoggerWrapped):
-    def __call__(self, *args: Any, **kwargs: Any) -> Any:
+class LazyLoggerWrappedCallable(LazyLoggerWrapped, Generic[P, R]):
+    func: Callable[P, R]
+
+    def __call__(self, *args: P.args, **kwargs: P.kwargs) -> R:
         assert hasattr(self,'logger'), "You need to set `self.logger` first."
         assert hasattr(self,'log_level'), "You need to set `self.log_level` first."
         start = time()
@@ -184,15 +230,19 @@ class LazyLoggerWrappedCallable(LazyLoggerWrapped):
         self.post_execution(start,return_value,*args,**kwargs)
         return return_value
     
+    @override
     def __repr__(self) -> str:
         return f"<LazyLoggerWrappedCallable '{self.func.__module__}.{self.func.__name__}'>"
     
-    def __hash__(self):
+    @override
+    def __hash__(self) -> int:
         return hash((self.func,self.func_string))
 
 
-class LazyLoggerWrappedCoroutineFunction(LazyLoggerWrapped):
-    def __call__(self, *args: Any, **kwargs: Any) -> Any:
+class LazyLoggerWrappedCoroutineFunction(LazyLoggerWrapped, Generic[P, R]):
+    func: Callable[P, Awaitable[R]]
+
+    def __call__(self, *args: P.args, **kwargs: P.kwargs) -> "LazyLoggerWrappedAwaitable[P, R]":
         assert hasattr(self,'logger'), "You need to set `self.logger` first."
         assert hasattr(self,'log_level'), "You need to set `self.log_level` first."
         awaitable = LazyLoggerWrappedAwaitable(self.func, *args, **kwargs)
@@ -200,51 +250,65 @@ class LazyLoggerWrappedCoroutineFunction(LazyLoggerWrapped):
         awaitable.log_level = self.log_level
         return awaitable
     
+    @override
     def __repr__(self) -> str:
         return f"<LazyLoggerWrappedCoroutineFunction '{self.func.__module__}.{self.func.__name__}'>"
     
-    def __hash__(self):
+    @override
+    def __hash__(self) -> int:
         return hash((self.func,self.func_string))
 
 
 class LazyLoggerWrappedGettableCoroutineFunction(LazyLoggerWrapped):
-    def __init__(self, func) -> None:
+    def __init__(self, func: Any) -> None:
         assert hasattr(func,'__get__')
         self.func = func
-        self.func_string = f"{self.func.__module__}.{self.func.__name__}" if self.func.__module__ else self.func.__name__
-        functools.update_wrapper(self, func)
+        module = getattr(self.func, "__module__", "")
+        name = getattr(self.func, "__name__", self.func.__class__.__name__)
+        self.func_string = f"{module}.{name}" if module else name
+        functools.update_wrapper(cast(Callable[..., Any], self), func)
     
-    def awaitable(self, instance, owner):
+    def awaitable(self, instance: Any, owner: Any) -> "LazyLoggerWrappedAwaitable[Any, Any]":
         logger.debug(f'instance: {instance}')
         logger.debug(f'owner: {owner}')
-        awaitable = LazyLoggerWrappedAwaitable(self.func.__get__,instance,owner=owner)
+        awaitable = LazyLoggerWrappedAwaitable(self.func.__get__, instance, owner)
         assert isawaitable(awaitable)
         awaitable.logger = self.logger
         awaitable.log_level = self.log_level
         return awaitable
 
-    def __get__(self, instance, owner=None):
+    @override
+    def __get__(self, instance: Any, owner: Any = None) -> Any:
         if instance is None:
             return self
         awaitable = self.awaitable(instance, owner)
         return awaitable
 
     
-class LazyLoggerWrappedAwaitable(LazyLoggerWrapped):
-    def __init__(self, func, *args, **kwargs) -> None:
-        awaitable = func(*args, **kwargs)
+class LazyLoggerWrappedAwaitable(LazyLoggerWrapped, Awaitable[R], Generic[P, R]):
+    func: Callable[P, Awaitable[R]]
+    args: tuple[Any, ...]
+    kwargs: dict[str, Any]
+    awaitable: Awaitable[R]
+
+    def __init__(self, func: Callable[P, Awaitable[R]], *args: P.args, **kwargs: P.kwargs) -> None:
+        awaitable: Awaitable[R] = func(*args, **kwargs)
         assert isawaitable(awaitable)
         self.func = func
-        self.func_string = f"{self.func.__module__}.{self.func.__name__}" if self.func.__module__ else self.func.__name__
+        module = getattr(self.func, "__module__", "")
+        name = getattr(self.func, "__name__", self.func.__class__.__name__)
+        self.func_string = f"{module}.{name}" if module else name
         self.args = args
         self.kwargs = kwargs
         self.awaitable = awaitable
     
-    def __hash__(self):
+    @override
+    def __hash__(self) -> int:
         args = (arg if not isinstance(arg, Iterable) else tuple(arg) for arg in self.args)
-        return hash((self.func,self.func_string,args,tuple(self.kwargs)))
+        return hash((self.func, self.func_string, args, tuple(self.kwargs)))
 
-    def __await__(self) -> Any:
+    @override
+    def __await__(self) -> Generator[Any, None, R]:
         start = time()
         assert hasattr(self,'logger'), "You need to set `self.logger` first."
         assert hasattr(self,'log_level'), "You need to set `self.log_level` first."
