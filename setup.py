@@ -16,6 +16,9 @@ setup(
     author_email='bobthebuidlerdefi@gmail.com',
     url='https://github.com/BobTheBuidler/lazy_logging',
     license='MIT',
+    install_requires=[
+        'typing_extensions',
+    ],
     setup_requires=[
         'setuptools_scm',
     ],
