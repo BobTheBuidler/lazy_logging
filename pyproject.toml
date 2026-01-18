@@ -20,3 +20,4 @@ enable_error_code = [
 [[tool.mypy.overrides]]
 module = ["pytest", "pytest.*"]
 follow_imports = "skip"
+ignore_missing_imports = true
