@@ -14,5 +14,6 @@ All agents must follow these rules:
 8) If the branch you're assigned to work on is from a remote (ie origin/master or upstream/awesome-feature) you must ensure you fetch and pull from the remote before you begin your work.
 9) Use one of `paths` or `paths-ignore` in every workflow file to make sure workflows only run when required.
 10) Maximize the use of caching in GitHub workflow files to minimize run duration.
+11) All mypy configuration (flags, overrides, per-module ignores, and file targets) should go in pyproject.toml. Do not split config across CLI args, mypy.ini, setup.cfg, or workflow steps.
 
 Reference: https://www.conventionalcommits.org/en/v1.0.0/
